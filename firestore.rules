@@ -1,0 +1,51 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn()  { return request.auth != null; }
+    function isAdmin()   { return signedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)); }
+    function mine(uid)   { return signedIn() && request.auth.uid == uid; }
+
+    // Roster. Everyone signed in can read names, only you can write your own.
+    match /users/{uid} {
+      allow read:   if signedIn();
+      allow create: if mine(uid);
+      allow update: if mine(uid) || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // Who can approve. Seed the first one from the console or with the setup code.
+    match /admins/{uid} {
+      allow read:  if signedIn();
+      allow write: if isAdmin();
+    }
+
+    // Notification emails and the full-day setting.
+    match /config/{doc} {
+      allow read:  if signedIn();
+      allow write: if isAdmin();
+    }
+
+    // A request is readable by its owner, by any manager, and by everyone
+    // once part of it is approved, which is what the team calendar shows.
+    match /requests/{id} {
+      allow read: if isAdmin() ||
+                     (signedIn() && (resource.data.uid == request.auth.uid ||
+                                     resource.data.anyApproved == true));
+
+      allow create: if mine(request.resource.data.uid)
+                    && request.resource.data.status == 'pending'
+                    && request.resource.data.anyApproved == false
+                    && request.resource.data.blocks.size() > 0
+                    && request.resource.data.blocks.size() <= 20
+                    && request.resource.data.email == request.auth.token.email;
+
+      // Only managers decide. Nobody edits a request after it's sent.
+      allow update: if isAdmin();
+
+      // You can cancel your own request while it's still waiting.
+      allow delete: if isAdmin() ||
+                       (resource.data.uid == request.auth.uid && resource.data.status == 'pending');
+    }
+  }
+}
